@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HORIZON DRIVE — X</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Rajdhani:wght@500;600;700&display=swap');
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#05060a;font-family:'Rajdhani',sans-serif;}
+  canvas{display:block;}
+  #hud{position:fixed;inset:0;pointer-events:none;z-index:10;color:#fff;user-select:none;}
+  .speedo{position:absolute;bottom:30px;right:42px;text-align:right;text-shadow:0 2px 24px rgba(0,0,0,.7);}
+  .speedo .val{font-family:'Bebas Neue';font-size:104px;line-height:.82;
+    background:linear-gradient(180deg,#fff,#9fd8ff);-webkit-background-clip:text;background-clip:text;color:transparent;}
+  .speedo .unit{font-size:20px;letter-spacing:5px;color:#16e0ff;font-weight:700;}
+  .gear{position:absolute;bottom:38px;left:42px;font-family:'Bebas Neue';font-size:80px;
+    color:#16e0ff;text-shadow:0 0 24px rgba(22,224,255,.5);}
+  .gear small{display:block;font-family:'Rajdhani';font-size:13px;letter-spacing:4px;color:#7aa;}
+  .rpm-wrap{position:absolute;bottom:126px;left:42px;width:240px;height:7px;background:rgba(255,255,255,.1);
+    border-radius:4px;overflow:hidden;box-shadow:0 0 14px rgba(0,0,0,.4) inset;}
+  .rpm-bar{height:100%;width:0%;background:linear-gradient(90deg,#16e0ff,#ff2bd6,#ff3b3b);transition:width .07s;}
+  .title{position:absolute;top:26px;left:42px;font-family:'Bebas Neue';font-size:36px;letter-spacing:7px;
+    background:linear-gradient(90deg,#16e0ff,#ff2bd6);-webkit-background-clip:text;background-clip:text;color:transparent;}
+  .clock{position:absolute;top:30px;left:50%;transform:translateX(-50%);font-family:'Bebas Neue';
+    font-size:30px;letter-spacing:4px;color:rgba(255,255,255,.8);text-shadow:0 2px 14px rgba(0,0,0,.6);}
+  .help{position:absolute;top:28px;right:42px;text-align:right;font-size:13px;letter-spacing:1px;
+    color:rgba(255,255,255,.6);line-height:1.7;}
+  .help b{color:#16e0ff;font-weight:700;}
+  #loader{position:fixed;inset:0;z-index:50;background:#05060a;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:24px;}
+  #loader h1{font-family:'Bebas Neue';font-size:70px;letter-spacing:12px;
+    background:linear-gradient(90deg,#16e0ff,#ff2bd6);-webkit-background-clip:text;background-clip:text;color:transparent;}
+  #loader p{color:#778;letter-spacing:3px;font-size:13px;}
+  .spin{width:46px;height:46px;border:3px solid rgba(22,224,255,.18);border-top-color:#16e0ff;border-radius:50%;animation:r 1s linear infinite;}
+  @keyframes r{to{transform:rotate(360deg);}}
+  /* speed vignette + lines overlay */
+  #vfx{position:fixed;inset:0;z-index:9;pointer-events:none;
+    background:radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,.55) 100%);opacity:0;transition:opacity .3s;}
+</style>
+</head>
+<body>
+<div id="loader"><h1>HORIZON DRIVE</h1><div class="spin"></div><p>FORGING THE NEON WORLD...</p></div>
+<div id="vfx"></div>
+<div id="hud">
+  <div class="title">HORIZON DRIVE — X</div>
+  <div class="clock" id="clock">12:00</div>
+  <div class="help">
+    <b>W/S</b> Throttle/Brake &nbsp; <b>A D</b> Steer<br>
+    <b>SPACE</b> Drift &nbsp; <b>C</b> Cam &nbsp; <b>T</b> Time speed<br>
+    <b>N</b> Force Night &nbsp; <b>R</b> Reset
+  </div>
+  <div class="gear"><span id="gear">N</span><small>GEAR</small></div>
+  <div class="rpm-wrap"><div class="rpm-bar" id="rpm"></div></div>
+  <div class="speedo"><div class="val" id="spd">0</div><div class="unit">KM / H</div></div>
+</div>
+
+<script type="importmap">
+{ "imports":{
+  "three":"https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.min.js",
+  "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { Sky } from 'three/addons/objects/Sky.js';
+
+// ============ RENDERER ============
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.shadowMap.enabled=true;
+renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=0.9;
+document.body.appendChild(renderer.domElement);
+
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(64,innerWidth/innerHeight,0.5,4000);
+
+// ============ SKY (atmospheric scattering) ============
+const sky=new Sky(); sky.scale.setScalar(10000); scene.add(sky);
+const skyU=sky.material.uniforms;
+skyU.turbidity.value=8; skyU.rayleigh.value=2.2;
+skyU.mieCoefficient.value=0.005; skyU.mieDirectionalG.value=0.8;
+const sunVec=new THREE.Vector3();
+
+// ============ LIGHTS ============
+const hemi=new THREE.HemisphereLight(0xbfe0ff,0x44402f,0.5); scene.add(hemi);
+const sun=new THREE.DirectionalLight(0xfff0d4,2.4);
+sun.castShadow=true; sun.shadow.mapSize.set(2048,2048);
+const sh=260; sun.shadow.camera.left=-sh;sun.shadow.camera.right=sh;
+sun.shadow.camera.top=sh;sun.shadow.camera.bottom=-sh;sun.shadow.camera.far=900;sun.shadow.bias=-0.0004;
+scene.add(sun); scene.add(sun.target);
+scene.fog=new THREE.Fog(0x9ec6e8,260,1100);
+
+// ============ GROUND ============
+const groundGeo=new THREE.PlaneGeometry(3600,3600,90,90);
+const gp=groundGeo.attributes.position;
+function terrainH(x,z){const d=Math.hypot(x,z);
+  return (Math.sin(x*0.004)*Math.cos(z*0.004)*9 + Math.sin(x*0.011+z*0.008)*3)*Math.min(1,d/420);}
+for(let i=0;i<gp.count;i++){gp.setZ(i,terrainH(gp.getX(i),gp.getY(i)));}
+groundGeo.computeVertexNormals();
+const groundMat=new THREE.MeshStandardMaterial({color:0x5d7d3e,roughness:1});
+const ground=new THREE.Mesh(groundGeo,groundMat);
+ground.rotation.x=-Math.PI/2; ground.receiveShadow=true; scene.add(ground);
+
+// ============ ROAD ============
+const roadCurve=new THREE.CatmullRomCurve3([
+  new THREE.Vector3(0,0,0),new THREE.Vector3(130,0,-70),new THREE.Vector3(240,0,-200),
+  new THREE.Vector3(190,0,-370),new THREE.Vector3(20,0,-440),new THREE.Vector3(-180,0,-390),
+  new THREE.Vector3(-290,0,-210),new THREE.Vector3(-240,0,-10),new THREE.Vector3(-130,0,90),
+  new THREE.Vector3(-20,0,65)],true,'catmullrom',0.5);
+const roadW=16,segs=480;
+const rg=new THREE.BufferGeometry(),verts=[],uvs=[],idx=[];
+for(let i=0;i<=segs;i++){const t=i/segs;const p=roadCurve.getPointAt(t);const tan=roadCurve.getTangentAt(t);
+  const L=new THREE.Vector3(-tan.z,0,tan.x).normalize().multiplyScalar(roadW/2);
+  verts.push(p.x+L.x,0.18,p.z+L.z,p.x-L.x,0.18,p.z-L.z); uvs.push(0,t*48,1,t*48);
+  if(i<segs){const a=i*2;idx.push(a,a+1,a+2,a+1,a+3,a+2);}}
+rg.setAttribute('position',new THREE.Float32BufferAttribute(verts,3));
+rg.setAttribute('uv',new THREE.Float32BufferAttribute(uvs,2));
+rg.setIndex(idx); rg.computeVertexNormals();
+const rcv=document.createElement('canvas');rcv.width=64;rcv.height=256;const rc=rcv.getContext('2d');
+rc.fillStyle='#1c1c22';rc.fillRect(0,0,64,256);
+for(let i=0;i<300;i++){rc.globalAlpha=Math.random()*.35;rc.fillStyle='#33333c';rc.fillRect(Math.random()*64,Math.random()*256,2,2);}
+rc.globalAlpha=1;rc.fillStyle='#f4d04a';for(let y=0;y<256;y+=42){rc.fillRect(30,y,4,24);}
+const roadTex=new THREE.CanvasTexture(rcv);roadTex.wrapS=roadTex.wrapT=THREE.RepeatWrapping;
+const roadMat=new THREE.MeshStandardMaterial({map:roadTex,roughness:0.5,metalness:0.2});
+const road=new THREE.Mesh(rg,roadMat);road.receiveShadow=true;scene.add(road);
+
+// neon road edge strips (glow at night)
+const edgeMat=new THREE.MeshStandardMaterial({color:0x16e0ff,emissive:0x16e0ff,emissiveIntensity:0});
+const ev1=[],ei1=[];
+for(let i=0;i<=segs;i++){const t=i/segs;const p=roadCurve.getPointAt(t);const tan=roadCurve.getTangentAt(t);
+  const L=new THREE.Vector3(-tan.z,0,tan.x).normalize();
+  const o=L.clone().multiplyScalar(roadW/2+0.4);
+  ev1.push(p.x+o.x,0.25,p.z+o.z,p.x+o.x*1.06,0.25,p.z+o.z*1.06);
+  if(i<segs){const a=i*2;ei1.push(a,a+1,a+2,a+1,a+3,a+2);}}
+const eg1=new THREE.BufferGeometry();eg1.setAttribute('position',new THREE.Float32BufferAttribute(ev1,3));eg1.setIndex(ei1);
+const edge1=new THREE.Mesh(eg1,edgeMat);scene.add(edge1);
+const edgeMat2=edgeMat.clone();edgeMat2.color.set(0xff2bd6);edgeMat2.emissive.set(0xff2bd6);
+const ev2=[],ei2=[];
+for(let i=0;i<=segs;i++){const t=i/segs;const p=roadCurve.getPointAt(t);const tan=roadCurve.getTangentAt(t);
+  const L=new THREE.Vector3(-tan.z,0,tan.x).normalize();
+  const o=L.clone().multiplyScalar(-(roadW/2+0.4));
+  ev2.push(p.x+o.x,0.25,p.z+o.z,p.x+o.x*1.06,0.25,p.z+o.z*1.06);
+  if(i<segs){const a=i*2;ei2.push(a,a+1,a+2,a+1,a+3,a+2);}}
+const eg2=new THREE.BufferGeometry();eg2.setAttribute('position',new THREE.Float32BufferAttribute(ev2,3));eg2.setIndex(ei2);
+const edge2=new THREE.Mesh(eg2,edgeMat2);scene.add(edge2);
+
+// ============ SCENERY ============
+function offRoad(x,z){for(let k=0;k<=24;k++){const rp=roadCurve.getPointAt(k/24);if(Math.hypot(rp.x-x,rp.z-z)<24)return false;}return true;}
+function makeTree(){const g=new THREE.Group();
+  const tr=new THREE.Mesh(new THREE.CylinderGeometry(0.5,0.8,5,6),new THREE.MeshStandardMaterial({color:0x4a3219,roughness:1}));
+  tr.position.y=2.5;tr.castShadow=true;g.add(tr);
+  const lm=new THREE.MeshStandardMaterial({color:0x2a5e2f,roughness:1,flatShading:true});
+  for(let i=0;i<3;i++){const c=new THREE.Mesh(new THREE.ConeGeometry(4-i*0.9,5,7),lm);c.position.y=6+i*2.4;c.castShadow=true;g.add(c);}
+  return g;}
+for(let i=0;i<150;i++){const t=makeTree();let x,z,tries=0;do{x=(Math.random()-.5)*1300;z=(Math.random()-.5)*1300;tries++;}while(!offRoad(x,z)&&tries<25);
+  t.position.set(x,terrainH(x,z),z);t.scale.setScalar(0.7+Math.random()*0.9);t.rotation.y=Math.random()*6.28;scene.add(t);}
+
+// glowing roadside pylons (neon at night)
+const pylons=[];const pylonMat=new THREE.MeshStandardMaterial({color:0x111,emissive:0xff2bd6,emissiveIntensity:0});
+for(let i=0;i<60;i++){const t=i/60;const p=roadCurve.getPointAt(t);const tan=roadCurve.getTangentAt(t);
+  const L=new THREE.Vector3(-tan.z,0,tan.x).normalize();
+  [1,-1].forEach(s=>{const m=new THREE.Mesh(new THREE.BoxGeometry(0.4,3,0.4),pylonMat.clone());
+    const o=L.clone().multiplyScalar(s*(roadW/2+2.5));m.position.set(p.x+o.x,1.5,p.z+o.z);
+    m.material.emissive.set(s>0?0x16e0ff:0xff2bd6);scene.add(m);pylons.push(m);});}
+
+// distant city skyline (glowing windows at night)
+const cityMat=new THREE.MeshStandardMaterial({color:0x1a1d2b,emissive:0x223,emissiveIntensity:0.0});
+for(let i=0;i<40;i++){const ang=Math.random()*6.28,dist=900+Math.random()*500;
+  const h=40+Math.random()*120,w=20+Math.random()*30;
+  const b=new THREE.Mesh(new THREE.BoxGeometry(w,h,w),cityMat.clone());
+  b.position.set(Math.cos(ang)*dist,h/2,Math.sin(ang)*dist);
+  b.material.emissive.set(0xffcc66);scene.add(b);pylons.push(b);}
+
+// ============ CAR ============
+const car=new THREE.Group();
+const paint=new THREE.MeshStandardMaterial({color:0xff1f3d,roughness:0.25,metalness:0.7});
+const glass=new THREE.MeshStandardMaterial({color:0x16202e,roughness:0.05,metalness:0.6,transparent:true,opacity:0.8});
+const lower=new THREE.Mesh(new THREE.BoxGeometry(2.2,0.6,4.7),paint);lower.position.y=0.62;lower.castShadow=true;car.add(lower);
+const mid=new THREE.Mesh(new THREE.BoxGeometry(2.0,0.5,3.2),paint);mid.position.set(0,1.0,-0.2);mid.castShadow=true;car.add(mid);
+const cabin=new THREE.Mesh(new THREE.BoxGeometry(1.8,0.6,1.9),glass);cabin.position.set(0,1.4,-0.3);car.add(cabin);
+const nose=new THREE.Mesh(new THREE.BoxGeometry(2.05,0.4,1.1),paint);nose.position.set(0,0.5,2.4);nose.castShadow=true;car.add(nose);
+const wing=new THREE.Mesh(new THREE.BoxGeometry(2.1,0.1,0.5),paint);wing.position.set(0,1.25,-2.5);car.add(wing);
+[-0.8,0.8].forEach(x=>{const s=new THREE.Mesh(new THREE.BoxGeometry(0.12,0.35,0.5),paint);s.position.set(x,1.0,-2.45);car.add(s);});
+const hlMat=new THREE.MeshStandardMaterial({color:0xffffff,emissive:0xffffff,emissiveIntensity:2});
+[-0.65,0.65].forEach(x=>{const h=new THREE.Mesh(new THREE.BoxGeometry(0.4,0.22,0.1),hlMat);h.position.set(x,0.65,2.95);car.add(h);});
+const tlMat=new THREE.MeshStandardMaterial({color:0xff2222,emissive:0xff1133,emissiveIntensity:2.5});
+[-0.7,0.7].forEach(x=>{const h=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.2,0.1),tlMat);h.position.set(x,0.7,-2.92);car.add(h);});
+const underglow=new THREE.PointLight(0x16e0ff,0,8);underglow.position.set(0,0.2,0);car.add(underglow);
+const wheelGeo=new THREE.CylinderGeometry(0.55,0.55,0.42,20);
+const wheelMat=new THREE.MeshStandardMaterial({color:0x0a0a0a,roughness:0.85});
+const rimMat=new THREE.MeshStandardMaterial({color:0xdddddd,metalness:0.95,roughness:0.2});
+const wheels=[];[[-1.05,-1.55],[1.05,-1.55],[-1.05,1.55],[1.05,1.55]].forEach(([x,z])=>{
+  const w=new THREE.Group();
+  const ti=new THREE.Mesh(wheelGeo,wheelMat);ti.rotation.z=Math.PI/2;ti.castShadow=true;w.add(ti);
+  const ri=new THREE.Mesh(new THREE.CylinderGeometry(0.32,0.32,0.44,6),rimMat);ri.rotation.z=Math.PI/2;w.add(ri);
+  w.position.set(x,0.55,z);car.add(w);wheels.push(w);});
+// headlight beams
+const beamL=new THREE.SpotLight(0xfff4d6,0,90,0.5,0.5,1);beamL.position.set(-0.6,0.7,2.9);
+const beamR=new THREE.SpotLight(0xfff4d6,0,90,0.5,0.5,1);beamR.position.set(0.6,0.7,2.9);
+car.add(beamL,beamR,beamL.target,beamR.target);
+beamL.target.position.set(-0.6,0,40);beamR.target.position.set(0.6,0,40);
+scene.add(car);
+
+// ============ PARTICLES: drift smoke + sparks ============
+const PMAX=400;
+const pGeo=new THREE.BufferGeometry();
+const pPos=new Float32Array(PMAX*3),pData=[];
+for(let i=0;i<PMAX;i++){pPos[i*3]=0;pPos[i*3+1]=-999;pPos[i*3+2]=0;pData.push({life:0,vx:0,vy:0,vz:0});}
+pGeo.setAttribute('position',new THREE.BufferAttribute(pPos,3));
+const pSize=new Float32Array(PMAX).fill(2);
+pGeo.setAttribute('size',new THREE.BufferAttribute(pSize,1));
+const smokeTex=(()=>{const c=document.createElement('canvas');c.width=c.height=64;const x=c.getContext('2d');
+  const g=x.createRadialGradient(32,32,0,32,32,32);g.addColorStop(0,'rgba(255,255,255,.9)');g.addColorStop(1,'rgba(255,255,255,0)');
+  x.fillStyle=g;x.fillRect(0,0,64,64);return new THREE.CanvasTexture(c);})();
+const pMat=new THREE.PointsMaterial({size:3,map:smokeTex,transparent:true,depthWrite:false,opacity:0.6,blending:THREE.NormalBlending});
+const particles=new THREE.Points(pGeo,pMat);scene.add(particles);
+let pCursor=0;
+function spawnSmoke(x,y,z){for(let n=0;n<2;n++){const i=pCursor;pCursor=(pCursor+1)%PMAX;
+  pPos[i*3]=x+(Math.random()-.5);pPos[i*3+1]=y;pPos[i*3+2]=z+(Math.random()-.5);
+  pData[i]={life:1,vx:(Math.random()-.5)*2,vy:1+Math.random()*1.5,vz:(Math.random()-.5)*2};}}
+
+// ============ POST PROCESSING ============
+const composer=new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene,camera));
+const bloom=new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight),0.6,0.5,0.85);
+composer.addPass(bloom);
+// motion-blur-ish chromatic speed shader
+const speedShader={uniforms:{tDiffuse:{value:null},amount:{value:0},time:{value:0}},
+ vertexShader:`varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`,
+ fragmentShader:`uniform sampler2D tDiffuse;uniform float amount;uniform float time;varying vec2 vUv;
+  void main(){vec2 d=(vUv-0.5);float r=length(d);
+   vec2 off=normalize(d)*amount*r*0.02;
+   float cr=texture2D(tDiffuse,vUv+off).r;
+   float cg=texture2D(tDiffuse,vUv).g;
+   float cb=texture2D(tDiffuse,vUv-off).b;
+   vec3 col=vec3(cr,cg,cb);
+   // radial speed streaks
+   float streak=smoothstep(0.4,0.9,r)*amount*0.25;
+   col+=streak*0.04;
+   gl_FragColor=vec4(col,1.0);}`};
+const speedPass=new ShaderPass(speedShader);composer.addPass(speedPass);
+
+// ============ STATE ============
+const V={pos:new THREE.Vector3(0,0,5),heading:Math.PI,speed:0,steer:0,drift:0};
+const MAX=82,ACC=27,BRK=44,REV=-17;
+const keys={};let camMode=0,cLock=false,tLock=false,nLock=false;
+let timeOfDay=0.5,timeSpeed=0.006,forceNight=false;
+addEventListener('keydown',e=>{keys[e.code]=true;if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code))e.preventDefault();});
+addEventListener('keyup',e=>{keys[e.code]=false;});
+function reset(){V.pos.set(0,0,5);V.heading=Math.PI;V.speed=0;V.drift=0;}
+
+// ============ CAMERA ============
+const camTarget=new THREE.Vector3();
+function updateCam(dt){
+  if(camMode===0){const back=10.5,up=4.4;
+    const des=new THREE.Vector3(V.pos.x+Math.sin(V.heading)*back,V.pos.y+up,V.pos.z+Math.cos(V.heading)*back);
+    camera.position.lerp(des,1-Math.pow(0.0015,dt));
+    camTarget.set(V.pos.x-Math.sin(V.heading)*8,V.pos.y+1.6,V.pos.z-Math.cos(V.heading)*8);camera.lookAt(camTarget);}
+  else if(camMode===1){camera.position.set(V.pos.x-Math.sin(V.heading)*0.1,V.pos.y+1.95,V.pos.z-Math.cos(V.heading)*0.1);
+    camera.lookAt(V.pos.x-Math.sin(V.heading)*20,V.pos.y+1.4,V.pos.z-Math.cos(V.heading)*20);}
+  else{const des=new THREE.Vector3(V.pos.x+Math.sin(V.heading)*22,V.pos.y+11,V.pos.z+Math.cos(V.heading)*22);
+    camera.position.lerp(des,1-Math.pow(0.003,dt));camera.lookAt(V.pos.x,V.pos.y+1,V.pos.z);}
+}
+
+// ============ DAY/NIGHT ============
+function updateSky(){
+  // elevation 0..1 of day -> sun angle
+  const phi=Math.PI*(0.5 - Math.sin(timeOfDay*Math.PI)*0.5); // high at noon
+  const theta=Math.PI*(timeOfDay*2 - 0.5);
+  const elev=Math.sin(timeOfDay*Math.PI); // 0 at night, 1 at noon
+  sunVec.setFromSphericalCoords(1, phi, theta);
+  skyU.sunPosition.value.copy(sunVec);
+  sun.position.copy(sunVec).multiplyScalar(400).add(V.pos);
+  sun.target.position.copy(V.pos);
+
+  const night=forceNight?1:THREE.MathUtils.clamp(1-elev*2.2,0,1);
+  // light intensities
+  sun.intensity=THREE.MathUtils.lerp(2.6,0.05,night);
+  hemi.intensity=THREE.MathUtils.lerp(0.6,0.08,night);
+  sun.color.setHSL(0.09, 0.6, THREE.MathUtils.lerp(0.9,0.4,Math.pow(1-elev,2)));
+  renderer.toneMappingExposure=THREE.MathUtils.lerp(0.95,0.55,night);
+  // sky params shift toward dusk
+  skyU.turbidity.value=THREE.MathUtils.lerp(6,18,1-elev);
+  skyU.rayleigh.value=THREE.MathUtils.lerp(1.5,3.5,1-elev);
+  // fog color sampled toward sky tone
+  const fogDay=new THREE.Color(0x9ec6e8),fogNight=new THREE.Color(0x0a0c1a);
+  scene.fog.color.copy(fogDay).lerp(fogNight,night);
+  scene.background=scene.fog.color;
+  // neon emissives ramp with night
+  edgeMat.emissiveIntensity=night*2.2; edgeMat2.emissiveIntensity=night*2.2;
+  pylons.forEach(p=>{p.material.emissiveIntensity=night*(p.geometry.parameters.height>10?0.8:1.6);});
+  cityMat.emissiveIntensity=night*0.6;
+  underglow.intensity=night*2.5;
+  beamL.intensity=night*6; beamR.intensity=night*6;
+  bloom.strength=THREE.MathUtils.lerp(0.45,1.1,night);
+  return night;
+}
+
+// ============ HUD refs ============
+const spdEl=document.getElementById('spd'),rpmEl=document.getElementById('rpm'),
+  gearEl=document.getElementById('gear'),clockEl=document.getElementById('clock'),vfxEl=document.getElementById('vfx');
+
+// ============ LOOP ============
+const clock=new THREE.Clock();
+function tick(){
+  requestAnimationFrame(tick);
+  let dt=Math.min(clock.getDelta(),0.05);
+
+  const thr=(keys.KeyW||keys.ArrowUp)?1:0, brk=(keys.KeyS||keys.ArrowDown)?1:0;
+  const lf=(keys.KeyA||keys.ArrowLeft)?1:0, rt=(keys.KeyD||keys.ArrowRight)?1:0, hb=keys.Space?1:0;
+  if(keys.KeyC&&!cLock){camMode=(camMode+1)%3;cLock=true;} if(!keys.KeyC)cLock=false;
+  if(keys.KeyT&&!tLock){timeSpeed=timeSpeed>0.02?0.006:0.04;tLock=true;} if(!keys.KeyT)tLock=false;
+  if(keys.KeyN&&!nLock){forceNight=!forceNight;nLock=true;} if(!keys.KeyN)nLock=false;
+  if(keys.KeyR)reset();
+
+  if(thr)V.speed+=ACC*dt;
+  else if(brk){if(V.speed>0.5)V.speed-=BRK*dt;else V.speed-=ACC*0.7*dt;}
+  else V.speed-=Math.sign(V.speed)*Math.min(Math.abs(V.speed),8*dt+Math.abs(V.speed)*0.4*dt);
+  V.speed=Math.max(REV,Math.min(MAX,V.speed));
+
+  const sf=Math.min(1,Math.abs(V.speed)/12),si=(lf-rt),grip=hb?0.42:1;
+  let turn=si*2.3*sf*(1-Math.abs(V.speed)/MAX*0.45); if(V.speed<0)turn*=-1;
+  V.heading+=turn*dt*grip;
+  const tD=hb&&Math.abs(V.speed)>10?si*0.55:si*0.12*sf;
+  V.drift+=(tD-V.drift)*Math.min(1,dt*6);
+
+  V.pos.x-=Math.sin(V.heading)*V.speed*dt; V.pos.z-=Math.cos(V.heading)*V.speed*dt;
+  const gh=terrainH(V.pos.x,V.pos.z); V.pos.y+=(gh-V.pos.y)*Math.min(1,dt*8);
+
+  car.position.copy(V.pos);
+  car.rotation.y=V.heading+V.drift*0.5;
+  car.rotation.z=-si*sf*0.05-V.drift*0.15;
+  car.rotation.x=-Math.sign(V.speed)*Math.min(0.04,Math.abs(V.speed)*0.0008)*thr+brk*0.03;
+  const spin=V.speed*dt/0.55;
+  wheels.forEach((w,i)=>{w.children[0].rotation.x+=spin;w.children[1].rotation.x+=spin;if(i>=2)w.rotation.y=si*0.4;});
+
+  // drift smoke
+  if((hb&&Math.abs(V.speed)>12)||Math.abs(V.drift)>0.3&&Math.abs(V.speed)>20){
+    const rl=new THREE.Vector3(Math.cos(V.heading),0,-Math.sin(V.heading));
+    spawnSmoke(V.pos.x-Math.sin(V.heading)*-1.5+rl.x*1.05,0.3,V.pos.z-Math.cos(V.heading)*-1.5+rl.z*1.05);
+    spawnSmoke(V.pos.x-Math.sin(V.heading)*-1.5-rl.x*1.05,0.3,V.pos.z-Math.cos(V.heading)*-1.5-rl.z*1.05);
+  }
+  // update particles
+  for(let i=0;i<PMAX;i++){const d=pData[i];if(d.life>0){d.life-=dt*0.8;
+    pPos[i*3]+=d.vx*dt;pPos[i*3+1]+=d.vy*dt;pPos[i*3+2]+=d.vz*dt;d.vy-=dt*0.5;
+    if(d.life<=0)pPos[i*3+1]=-999;}}
+  pGeo.attributes.position.needsUpdate=true;
+  pMat.opacity=0.55;
+
+  // time of day
+  timeOfDay=(timeOfDay+timeSpeed*dt)%1;
+  const night=updateSky();
+
+  updateCam(dt);
+
+  // speed vfx
+  const norm=Math.abs(V.speed)/MAX;
+  speedPass.uniforms.amount.value=THREE.MathUtils.lerp(speedPass.uniforms.amount.value, norm*1.4, 0.1);
+  speedPass.uniforms.time.value+=dt;
+  vfxEl.style.opacity=norm*0.8;
+  camera.fov=THREE.MathUtils.lerp(camera.fov,64+norm*12,0.1);camera.updateProjectionMatrix();
+
+  // hud
+  const kmh=Math.abs(Math.round(V.speed*3.6));
+  spdEl.textContent=kmh;
+  rpmEl.style.width=Math.min(100,norm*100+(thr?15:0))+'%';
+  let g='N'; if(V.speed<-0.5)g='R'; else if(kmh>0)g=Math.min(6,Math.floor(kmh/45)+1);
+  gearEl.textContent=g;
+  const hh=Math.floor(timeOfDay*24),mm=Math.floor((timeOfDay*24%1)*60);
+  clockEl.textContent=String(hh).padStart(2,'0')+':'+String(mm).padStart(2,'0');
+
+  composer.render();
+}
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);});
+camera.position.set(0,5,18);camera.lookAt(0,1,5);
+setTimeout(()=>document.getElementById('loader').style.display='none',700);
+tick();
+</script>
+</body>
+</html>
